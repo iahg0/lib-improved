@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC2CMADB-improved
 // @namespace    [https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved](https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved)
-// @version      1.4.1
+// @version      1.4.2
 // @description  参考Duckee KememChan的fc2脚本用AI重构(精简版)
 // @author       Awei
 // @icon         [https://fc2cmadb.com/favicon.ico](https://fc2cmadb.com/favicon.ico)
@@ -300,11 +300,13 @@ function inertiaMeta() {
 }
 
 // 通过 Inertia partial reload 请求指定页的 articles 数据，返回 { data, last_page, ... } 或 null
+// 注意：fillTo30 会逐页调用本函数，必须纳入本站节流 (throttle self) + 429 退避，
+// 否则翻页时会产生不受限流的连续请求，极易触发站点限流导致强制登出。
 async function fetchPageData(meta, page) {
     const url = new URL(meta.url || location.href, location.origin);
     url.searchParams.set('page', String(page));
-    try {
-        const res = await fetch(url.toString(), {
+    return throttle(true, () => new Promise(r => {
+        fetch(url.toString(), {
             headers: {
                 'X-Inertia': 'true',
                 'X-Inertia-Version': meta.version,
@@ -312,11 +314,12 @@ async function fetchPageData(meta, page) {
                 'X-Inertia-Partial-Data': 'articles'
             },
             credentials: 'same-origin'
-        });
-        if (res.status === 409 || !res.ok) return null;
-        const d = await res.json();
-        return (d && d.props && d.props.articles) || null;
-    } catch (e) { return null; }
+        }).then(res => {
+            if (res.status === 429) { backoff(); return r(null); }   // 被限流：退避 60s 并停止翻页
+            if (res.status === 409 || !res.ok) return r(null);
+            return res.json().then(d => r((d && d.props && d.props.articles) || null)).catch(() => r(null));
+        }).catch(() => r(null));
+    }));
 }
 
 // 找出文章卡片所在的列表容器 (flex-wrap)
