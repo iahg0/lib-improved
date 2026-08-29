@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC2CMADB-improved
 // @namespace    [https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved](https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved)
-// @version      1.4.4
+// @version      1.4.5
 // @description  参考Duckee KememChan的fc2脚本用AI重构(精简版)
 // @author       Awei
 // @icon         [https://fc2cmadb.com/favicon.ico](https://fc2cmadb.com/favicon.ico)
@@ -24,9 +24,8 @@ const CSS = `
 .fc2-btn-missav{color:#ff9e9e}.fc2-btn-njav{color:#a78bfa}.fc2-btn-sukebei{color:#ffda9e}.fc2-btn-magnet{color:#9eecff;background:rgba(59,130,246,.2)}
 .fc2-preview-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:15px}
 .fc2-media{width:100%;height:auto;border-radius:8px;object-fit:cover;box-shadow:0 4px 10px rgba(0,0,0,.2);background:#1a1a2e}
-.fc2-custom-card-wrapper{display:flex;flex-direction:column;background:rgba(30,41,59,.5);border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;transition:transform .2s,box-shadow .2s}
-.fc2-custom-card-wrapper:hover{transform:translateY(-4px);box-shadow:0 12px 24px rgba(0,0,0,.4)}
-.fc2-original-card-override{background:transparent!important;border:none!important;box-shadow:none!important;border-radius:12px 12px 0 0!important;flex-grow:1}
+.fc2-custom-card-wrapper{display:flex;flex-direction:column;border-radius:12px;overflow:hidden}
+.fc2-original-card-override{border:none!important;box-shadow:none!important;border-radius:12px 12px 0 0!important;flex-grow:1}
 .fc2-card-btn-row{display:flex;gap:8px;flex-wrap:wrap;padding:12px;width:100%;background:rgba(15,23,42,.7);border-top:1px solid rgba(255,255,255,.05);margin-top:auto;justify-content:center;position:relative;z-index:20}
 .fc2-card-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;padding:5px 10px;border-radius:6px;font-size:11px;font-weight:600;text-decoration:none!important;transition:all .2s ease}
 .fc2-card-btn:hover{transform:translateY(-2px);filter:brightness(1.2)}
@@ -315,8 +314,10 @@ function findListContainer(firstFigure) {
 }
 
 // 按站点卡片结构注入一张新卡片，返回其中的 figure (.rounded-lg) 供后续包装
-function injectCard(container, item) {
+// 若页内已存在同编号卡片则返回 null（不重复注入）。
+function injectCard(container, item, markInjected) {
     const id = item.video_id;
+    if (document.querySelector(`[data-fc2P="${id}"], .fc2-custom-card-wrapper[data-code="${id}"]`)) return null;  // 防重复
     const img = item.image_url || '/storage/images/article/no-image.jpg';
     const title = item.title || '';
     const div = document.createElement('div');
@@ -332,21 +333,28 @@ function injectCard(container, item) {
             `<h2 class="card-title"><a class="link no-underline font-medium line-clamp-2" href="/articles/${id}">${escapeHtml(title)}</a></h2>` +
         '</div>';
     container.appendChild(div);
+    if (markInjected) div.dataset.fc2Injected = '1';   // 标记：fillTo30 补进来的，用于跨页去重
     const imgEl = div.querySelector('img');
     if (imgEl?.parentElement) imgEl.parentElement.dataset.fc2P = String(id);   // 标记已处理，避免重复包装
     return div.querySelector('figure');
 }
 
+// 会话级：记录 fillTo30 已从后续页补进来展示过的编号，用于跨页去重（翻到那些页时移除重复项）
+const injectedCodes = new Set();
+
 // 若磁力项目不足 30 个，自动逐页请求后续文章并注入有磁力的卡片
+// 一次性把所有补的页拉完再统一注入，避免"不断填充"；并用 injectedCodes 防重复注入。
 async function fillTo30(keep, container) {
     if (!container || !hideNoMagnet) return;
     const target = 30;
     const seen = new Set(keep.map(e => e.code));
+    for (const c of injectedCodes) seen.add(c);   // 已补过的不再重复补
     if (seen.size >= target) return;
     const meta = inertiaMeta();
     if (!meta) return;
     const cur = parseInt(new URL(meta.url || location.href, location.origin).searchParams.get('page') || '1', 10) || 1;
     let page = cur + 1, last = Infinity;
+    const toInject = [];   // 先收集，再一次注入
     while (seen.size < target && page <= last) {
         const art = await fetchPageData(meta, page);
         if (!art) break;
@@ -362,10 +370,16 @@ async function fillTo30(keep, container) {
             seen.add(code);
             const s = seedCache.get(code);
             if (!(s && s.magnet)) continue;   // 隐藏模式：无磁力的不显示
-            if (document.querySelector(`.fc2-custom-card-wrapper[data-code="${code}"]`)) continue;  // 防重复：页内已存在
-            keep.push({ code, figure: injectCard(container, it) });
+            if (document.querySelector(`[data-fc2P="${code}"], .fc2-custom-card-wrapper[data-code="${code}"]`)) continue;  // 防重复
+            toInject.push(it);
         }
         page++;
+    }
+    // 一次性注入全部有磁力项目
+    for (const it of toInject) {
+        const code = String(it.video_id);
+        const fig = injectCard(container, it, true);
+        if (fig) { injectedCodes.add(code); keep.push({ code, figure: fig }); }
     }
 }
 
@@ -415,6 +429,11 @@ const App = {
             const m = link.href.match(/\/articles\/(\d{6,8})/);
             const anchor = m && link.querySelector('img')?.parentElement;
             if (!anchor || anchor.dataset.fc2P === m[1]) return;
+            // 跨页去重：该编号已在更早页面被 fillTo30 补进来展示过，当前页原生再出现则移除，避免重复
+            if (injectedCodes.has(m[1]) && !link.closest('[data-fc2Injected]')) {
+                link.closest('.card')?.remove();
+                return;
+            }
             // 防重复：同一编号只处理第一处；若页面已有同编号卡片，则移除重复项
             if (seenCodes.has(m[1]) || document.querySelector(`[data-fc2P="${m[1]}"]`)) {
                 link.closest('.card')?.remove();

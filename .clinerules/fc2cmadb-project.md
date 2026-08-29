@@ -10,7 +10,7 @@ paths:
 
 ## 硬性规则（必须遵守）
 
-1. **修改完必须递增版本号**：任何对 `FC2CMADB-improved.js` 的改动（含仅改注释/描述），提交前必须递增文件头部 `// @version` 字段（当前 `1.4.4`，采用 `主.次.修订`）。
+1. **修改完必须递增版本号**：任何对 `FC2CMADB-improved.js` 的改动（含仅改注释/描述），提交前必须递增文件头部 `// @version` 字段（当前 `1.4.5`，采用 `主.次.修订`）。
    - 不 bump 版本号，Tampermonkey 不会触发更新检测，改动无法推送到已安装用户（历史 commit `563c914` 就是用 "Bump version" 触发更新的）。
    - commit message 应体现，如 `Bump version` / `Fix: ...`。
 2. 保持脚本为**单文件、IIFE 包裹**（`(function() { 'use strict'; ... })()`），不要拆分。

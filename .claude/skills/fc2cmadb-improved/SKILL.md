@@ -9,7 +9,7 @@ description: 当需要修改、维护或审查 FC2CMADB-improved.js（一个针�
 
 ## 硬性规则（必须遵守）
 
-1. **修改完必须递增版本号**：任何对 `FC2CMADB-improved.js` 的改动（包括仅改注释/描述），提交前必须递增文件头部 `// @version` 字段（以文件头部 `// @version` 为准，当前 `1.4.4`，采用 `主.次.修订` 语义）。
+1. **修改完必须递增版本号**：任何对 `FC2CMADB-improved.js` 的改动（包括仅改注释/描述），提交前必须递增文件头部 `// @version` 字段（以文件头部 `// @version` 为准，当前 `1.4.5`，采用 `主.次.修订` 语义）。
    - 没有版本号变更，Tampermonkey 不会触发更新检测，改动不会推送到已安装用户。
    - 历史上就是用 "Bump version" 来触发 Tampermonkey 更新（见 git log `563c914`）。
 2. 保持脚本为**单文件、IIFE 包裹**（`(function() { 'use strict'; ... })()`），不要拆分。
@@ -49,6 +49,16 @@ fc2cmadb.com 是 **Laravel + Inertia + Livewire** 的 SPA：
   - 卡片：`div.card bg-base-100 ... p-2 card-sm ...`，内含 `figure.relative.h-48.bg-base-200.rounded-lg`
   - figure 内有 `a.block.rounded.overflow-hidden`（href=`/articles/{video_id}`）包着 `<img>`；以及显示 video_id 的 `<span>`。
   - 脚本通过 `a[href*="/articles/"]` + `link.querySelector('img')` 识别卡片，`figure`（`.rounded-lg`）就是被包装的卡片元素。
+  - **卡片渲染结论**（实测）：`articles/ranking` 与 `articles/latest` 等共用 `ArticleList`
+    Vue 组件，卡片结构一致：`.card`（`display:flex;flex-direction:column`，daisyUI）内
+    `<figure>`（图片）在前、`<div.card-body>`（标题，`flex:auto`）在后，故 DOM 顺序即
+    “图片在上、标题在下”。
+  - **列表数据是 Inertia deferred prop**：初始 HTML **不含**卡片 DOM（卡片由前端 JS /
+    `LazyLoadImage` 渲染）。要确认卡片结构只能看 Vue 组件或浏览器渲染，不能只看页面源码。
+  - **卡片宽度类**：`xl:max-w-1/6 lg:max-w-1/5 md:w-1/4 sm:w-1/3 w-1/2 p-2`（网格项），
+    脚本整卡包装转移宽度类时以此为据。
+  - **数据层无跨页重复**：ranking 共 4 页 100 条，各页编号唯一；脚本里出现的“重复”均来自
+    自身注入/包装逻辑，而非站点数据问题。
 
 ## 代码结构与约定
 
@@ -129,12 +139,13 @@ python tools/fc2_lint.py --json    # 输出 JSON（供脚本/CI）
 
 ## 列表页渲染：易卡住的点（改 renderList / wrapCardRow / fillTo30 前必读）
 
-这些是本项目多次踩过的坑，改动后要用 `fc2_lint.py` 校验：
+这些是本项目踩过的坑，改动后要用 `fc2_lint.py` 校验：
 
 1. **必须整卡包装**：`wrapCardRow` 收到的是 `figure`（`.rounded-lg`），
    **必须**先 `figure.closest('.card')` 取整卡再包进 `fc2-custom-card-wrapper`。
    若只包 `figure`，`card-body`（标题）会留在 wrapper 外，出现“标题在上、图片在下”
-   的错位，且 SPA 重渲染时易产生重复卡片。
+   的错位，且 SPA 重渲染时易产生重复卡片。wrapper 应保持**透明**，让 `.card` 保留
+   站点底色 `bg-base-100`（别给整卡加深色背景，否则变黑底）。
 2. **宽度/内边距类要转移到 wrapper**：整卡包装后，`.card` 上的响应式宽度/内边距类
    （`xl:max-w-1/6 lg:max-w-1/5 md:w-1/4 sm:w-1/3 w-1/2 p-2`、`h-full`）必须
    `sizing.forEach(c => card.classList.remove(c))` 从卡片移除并加到 wrapper，
@@ -144,6 +155,14 @@ python tools/fc2_lint.py --json    # 输出 JSON（供脚本/CI）
    重复卡片直接移除。配合 `data-fc2P` 锚点标记，可同时防“同页重复”与“跨渲染重复”。
 4. **磁力判断统一**：一律用 `!!(s && s.magnet)`（`s` 来自 `seedCache.get(...)`）。
 5. **外部跨域走 GM_xmlhttpRequest**：不要对 sukebei/baihuse 等直接 `fetch`。
+6. **fillTo30 补页的两个坑**（都源于“从后续页拉项目补当前页”）：
+   - **去重状态不能是局部变量**：`renderList` 会被 MutationObserver 反复触发，若每次重建
+     局部 seen，会重复注入同一批项目（“不断填充/越填越多”）。须用**会话级 `injectedCodes`
+     （Set）** + `injectCard` 查重，并**先收集再一次注入**。
+   - **补进来的项目属后续页，翻到那些页会原生重复**（“第三页看到第二页的”）。给注入卡片打
+     `data-fc2Injected` 标记并入 `injectedCodes`；`renderList` 扫描到
+     `injectedCodes.has(code)` 且非 `data-fc2Injected` 的原生卡片时直接移除。
+
 
 ## 修改流程建议
 
