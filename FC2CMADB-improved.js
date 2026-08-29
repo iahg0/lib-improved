@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC2CMADB-improved
 // @namespace    [https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved](https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved)
-// @version      1.4.3
+// @version      1.4.4
 // @description  参考Duckee KememChan的fc2脚本用AI重构(精简版)
 // @author       Awei
 // @icon         [https://fc2cmadb.com/favicon.ico](https://fc2cmadb.com/favicon.ico)
@@ -362,6 +362,7 @@ async function fillTo30(keep, container) {
             seen.add(code);
             const s = seedCache.get(code);
             if (!(s && s.magnet)) continue;   // 隐藏模式：无磁力的不显示
+            if (document.querySelector(`.fc2-custom-card-wrapper[data-code="${code}"]`)) continue;  // 防重复：页内已存在
             keep.push({ code, figure: injectCard(container, it) });
         }
         page++;
@@ -369,12 +370,24 @@ async function fillTo30(keep, container) {
 }
 
 // 为单张卡片创建(或复用)增强按钮行，返回按钮行元素
-function wrapCardRow(card, code) {
+// 注意：把整张 .card（figure 图片 + card-body 标题）都包进 flex 列 wrapper，
+// 保证“图片在上、标题在下”；若只包 figure，标题会留在 wrapper 外，易造成错位/重复。
+function wrapCardRow(figure, code) {
     let row;
+    const card = figure.closest('.card') || figure.parentElement;
+    // 防重复：页面已存在同编号 wrapper，说明当前卡片是重复项，直接移除
+    const existing = document.querySelector(`.fc2-custom-card-wrapper[data-code="${code}"]`);
+    if (existing && existing !== card?.parentElement) { card?.remove(); return null; }
+
     if (card?.parentElement && !card.parentElement.classList.contains('fc2-custom-card-wrapper')) {
         const wrap = document.createElement('div');
-        wrap.className = 'fc2-custom-card-wrapper'; wrap.dataset.code = code;
+        // 把卡片的响应式宽度/内边距/高度类转移到 wrapper，保持网格排版不被破坏
+        const sizing = (card.className.match(/(?:^|\s)(?:xl:|lg:|md:|sm:|w-|max-w-|h-|p-)[^\s]+/g) || [])
+            .map(s => s.trim()).filter(s => s !== 'h-full');
+        wrap.className = 'fc2-custom-card-wrapper ' + sizing.join(' ');
+        wrap.dataset.code = code;
         if (card.classList.contains('h-full')) { card.classList.remove('h-full'); wrap.classList.add('h-full'); }
+        sizing.forEach(c => card.classList.remove(c));   // 从卡片移除已转移的宽度/内边距类
         card.parentNode.insertBefore(wrap, card);
         wrap.appendChild(card);
         card.classList.add('fc2-original-card-override');
@@ -397,11 +410,18 @@ function wrapCardRow(card, code) {
 const App = {
     async renderList() {
         const map = new Map(), entries = [];
+        const seenCodes = new Set();
         document.querySelectorAll('a[href*="/articles/"]').forEach(link => {
             const m = link.href.match(/\/articles\/(\d{6,8})/);
             const anchor = m && link.querySelector('img')?.parentElement;
             if (!anchor || anchor.dataset.fc2P === m[1]) return;
+            // 防重复：同一编号只处理第一处；若页面已有同编号卡片，则移除重复项
+            if (seenCodes.has(m[1]) || document.querySelector(`[data-fc2P="${m[1]}"]`)) {
+                link.closest('.card')?.remove();
+                return;
+            }
             anchor.dataset.fc2P = m[1];
+            seenCodes.add(m[1]);
             const figure = link.closest('.rounded-lg') || link.closest('.bg-gray-800') || link.parentElement;
             if (!figure || !figure.isConnected) return;
             entries.push({ code: m[1], figure });

@@ -9,12 +9,17 @@ description: 当需要修改、维护或审查 FC2CMADB-improved.js（一个针�
 
 ## 硬性规则（必须遵守）
 
-1. **修改完必须递增版本号**：任何对 `FC2CMADB-improved.js` 的改动（包括仅改注释/描述），提交前必须递增文件头部 `// @version` 字段（以文件头部 `// @version` 为准，当前 `1.4.1`，采用 `主.次.修订` 语义）。
+1. **修改完必须递增版本号**：任何对 `FC2CMADB-improved.js` 的改动（包括仅改注释/描述），提交前必须递增文件头部 `// @version` 字段（以文件头部 `// @version` 为准，当前 `1.4.4`，采用 `主.次.修订` 语义）。
    - 没有版本号变更，Tampermonkey 不会触发更新检测，改动不会推送到已安装用户。
    - 历史上就是用 "Bump version" 来触发 Tampermonkey 更新（见 git log `563c914`）。
 2. 保持脚本为**单文件、IIFE 包裹**（`(function() { 'use strict'; ... })()`），不要拆分。
 3. 不要在脚本中引入未授权的新 `// @grant`；外部跨域请求（如 sukebei）必须走 `GM_xmlhttpRequest`。
 4. 保持代码注释与原有中英文混排风格，关键逻辑保留注释。
+5. **改完跑回归校验 `tools/fc2_lint.py`**：任何对脚本的改动提交前，运行
+   `python tools/fc2_lint.py`，检查版本号 / IIFE / 授权 / 磁力判断 / 防重复去重 /
+   整卡包装 / 外部请求走 GM_xmlhttpRequest / 语法。命中 FAIL 先修再提交。
+   并把新踩的坑回填到本 SKILL 的“易卡住的点”，防止下次再被同样问题卡住。
+
 
 ## 项目概要
 
@@ -108,6 +113,38 @@ python -m venv .venv
 
 也支持 `import fc2_probe` 复用 `get_page_meta` / `fetch_articles` / `fetch_detail`。
 
+### 回归校验工具 `tools/fc2_lint.py`（改脚本必跑）
+
+静态检查 `FC2CMADB-improved.js` 是否满足关键约定，防止改坏。不依赖第三方库：
+
+```
+python tools/fc2_lint.py           # 检查仓库根目录脚本；退出码 0=通过 / 1=有 FAIL
+python tools/fc2_lint.py --json    # 输出 JSON（供脚本/CI）
+```
+
+覆盖项：`@version` 版本号、IIFE 包裹、未授权 `@grant`、磁力判断 `!!(s && s.magnet)`、
+`data-fc2P` 防重复标记、`seenCodes`/`[data-code]` 去重、`wrapCardRow` 整卡包装
+（`figure.closest('.card')`）、外部跨域走 `GM_xmlhttpRequest`（禁止第三方 `fetch`）、
+`node --check` 语法。命中 FAIL 先修再提交。
+
+## 列表页渲染：易卡住的点（改 renderList / wrapCardRow / fillTo30 前必读）
+
+这些是本项目多次踩过的坑，改动后要用 `fc2_lint.py` 校验：
+
+1. **必须整卡包装**：`wrapCardRow` 收到的是 `figure`（`.rounded-lg`），
+   **必须**先 `figure.closest('.card')` 取整卡再包进 `fc2-custom-card-wrapper`。
+   若只包 `figure`，`card-body`（标题）会留在 wrapper 外，出现“标题在上、图片在下”
+   的错位，且 SPA 重渲染时易产生重复卡片。
+2. **宽度/内边距类要转移到 wrapper**：整卡包装后，`.card` 上的响应式宽度/内边距类
+   （`xl:max-w-1/6 lg:max-w-1/5 md:w-1/4 sm:w-1/3 w-1/2 p-2`、`h-full`）必须
+   `sizing.forEach(c => card.classList.remove(c))` 从卡片移除并加到 wrapper，
+   否则 wrapper 会占满整行、网格排版被破坏。
+3. **按编号去重**：`renderList` 用 `seenCodes` 去重，`wrapCardRow`/`fillTo30` 用
+   `document.querySelector('.fc2-custom-card-wrapper[data-code="..."]')` 查重，
+   重复卡片直接移除。配合 `data-fc2P` 锚点标记，可同时防“同页重复”与“跨渲染重复”。
+4. **磁力判断统一**：一律用 `!!(s && s.magnet)`（`s` 来自 `seedCache.get(...)`）。
+5. **外部跨域走 GM_xmlhttpRequest**：不要对 sukebei/baihuse 等直接 `fetch`。
+
 ## 修改流程建议
 
 1. 明确要改的功能，先读 `FC2CMADB-improved.js` 全文理解现状。
@@ -115,5 +152,6 @@ python -m venv .venv
    - **直接跑 `tools/fc2_probe.py` 探查**（见"站点请求探查工具"），不要临时写 ps1。
    - 排查坑提醒：PowerShell `ConvertFrom-Json` 会被 Inertia JSON 里 language 字典的重复 key（`Delete Account` / `Delete account`）抛 `DuplicateKeysInJsonString` 卡死；`Invoke-WebRequest` 发 `X-Inertia-*` 自定义头不可靠（partial 会退化成返回全量 props）。用 Python 工具或 `curl.exe`。
 3. 改动遵循上述约定，保持单文件。
-4. 用 `node --check FC2CMADB-improved.js` 校验语法。
+4. 用 `node --check FC2CMADB-improved.js` 校验语法，并跑 `python tools/fc2_lint.py` 做回归检查（覆盖版本号/IIFE/授权/磁力判断/防重复去重/整卡包装/外部请求）。
 5. **递增 `// @version` 版本号**，并在 commit message 中体现（如 "Bump version" / "Fix: ..."）。
+6. 若踩到新坑，回填到本 SKILL“易卡住的点”，防止下次再被同样问题卡住。
