@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC2CMADB-improved
 // @namespace    [https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved](https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved)
-// @version      1.4.10
+// @version      1.4.11
 // @description  参考Duckee KememChan的fc2脚本用AI重构(精简版)
 // @author       Awei
 // @icon         [https://fc2cmadb.com/favicon.ico](https://fc2cmadb.com/favicon.ico)
@@ -42,7 +42,7 @@ const CSS = `
 .fc2-toggle-on .fc2-toggle-track::after{transform:translateX(16px)}
 #fc2-rate-limit-toast{position:fixed;bottom:20px;right:20px;z-index:2147483647;background:rgba(220,38,38,.92);color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;box-shadow:0 8px 32px rgba(0,0,0,.4);display:none;max-width:340px}
 #fc2-lightbox{position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.9);display:none;align-items:center;justify-content:center;cursor:zoom-out;padding:20px;box-sizing:border-box}
-#fc2-lightbox img{max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;box-shadow:0 0 40px rgba(0,0,0,.6);cursor:zoom-out}
+#fc2-lightbox img{max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;box-shadow:0 0 40px rgba(0,0,0,.6)}
 `;
 GM_addStyle(CSS);
 
@@ -248,48 +248,6 @@ function applyBookmarkSort() {
     });
 }
 
-// 判断卡片图片是否为站点的 no-image 占位图（image_url 为空或真实缩略图加载失败时）
-function isNoImage(img) {
-    const src = img.getAttribute('src') || img.src || '';
-    return src.includes('no-image.jpg');
-}
-
-// 无图/坏图卡片：尝试从 baihuse 明细页读取 cover.jpg 作为封面（data-fc2Cover 防重复）
-function fetchCover(img, code) {
-    if (img.dataset.fc2Cover === code || !img.isConnected) return;
-    if (!isNoImage(img)) return;
-    img.dataset.fc2Cover = code;
-    API.baihuse(code).then(media => {
-        const cover = media.images.find(s => /cover\.jpg$/i.test(s)) || media.images[0];
-        if (cover && img.isConnected) {
-            img.src = cover;
-            img.removeAttribute('srcset');
-        }
-    });
-}
-
-// 懒加载封面：仅在卡片进入视口时才请求 cover.jpg，避免一次性请求整页明细图
-// 触发 baihuse 限流、进而拖慢/拖垮详情页预览（详情页预览同样依赖 baihuse）。
-let coverObserver = null;
-function setupCoverFallback(img, code) {
-    // 真实缩略图失效时站点 onError 会回退到 no-image.jpg，这里补一次兜底
-    // （懒加载图通常只在进入视口后才触发 error，天然不会造成瞬时大量请求）
-    img.addEventListener('error', () => setTimeout(() => fetchCover(img, code), 0));
-    if (!('IntersectionObserver' in window)) { fetchCover(img, code); return; }
-    if (!coverObserver) {
-        coverObserver = new IntersectionObserver(entries => {
-            entries.forEach(en => {
-                if (!en.isIntersecting) return;
-                coverObserver.unobserve(en.target);
-                fetchCover(en.target, en.target.dataset.fc2CoverCode);
-            });
-        }, { rootMargin: '200px' });
-    }
-    img.dataset.fc2CoverCode = code;
-    coverObserver.observe(img);
-}
-
-
 // 详情页预览图点击放大 (lightbox)
 function bindLightbox(container) {
     container.querySelectorAll('img.fc2-media').forEach(img => {
@@ -301,8 +259,7 @@ function bindLightbox(container) {
             if (!box) {
                 box = document.createElement('div');
                 box.id = 'fc2-lightbox';
-                // 单击图片本身也可关闭（不再要求点图片旁边的空白区域）
-                box.addEventListener('click', () => box.style.display = 'none');
+                box.addEventListener('click', e => { if (e.target === box) box.style.display = 'none'; });
                 document.body.appendChild(box);
             }
             box.innerHTML = `<img src="${img.src}" alt=""/>`;
@@ -391,8 +348,7 @@ const App = {
         const seenCodes = new Set();
         document.querySelectorAll('a[href*="/articles/"]').forEach(link => {
             const m = link.href.match(/\/articles\/(\d{6,8})/);
-            const img = m && link.querySelector('img');
-            const anchor = img?.parentElement;
+            const anchor = m && link.querySelector('img')?.parentElement;
             if (!anchor || anchor.dataset.fc2P === m[1]) return;
             // 防重复：同一编号只处理第一处；若页面已有同编号卡片，则移除重复项
             if (seenCodes.has(m[1]) || document.querySelector(`[data-fc2P="${m[1]}"]`)) {
@@ -401,7 +357,6 @@ const App = {
             }
             anchor.dataset.fc2P = m[1];
             seenCodes.add(m[1]);
-            setupCoverFallback(img, m[1]);   // 无图/坏图卡片：用明细页 cover.jpg 作为封面
             const figure = link.closest('.rounded-lg') || link.closest('.bg-gray-800') || link.parentElement;
             if (!figure || !figure.isConnected) return;
             entries.push({ code: m[1], figure });
