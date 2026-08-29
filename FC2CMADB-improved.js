@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC2CMADB-improved
 // @namespace    [https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved](https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved)
-// @version      1.4.0
+// @version      1.4.1
 // @description  参考Duckee KememChan的fc2脚本用AI重构(精简版)
 // @author       Awei
 // @icon         [https://fc2cmadb.com/favicon.ico](https://fc2cmadb.com/favicon.ico)
@@ -81,6 +81,26 @@ async function throttle(self, task) {
     try { return await task(); } catch (e) { return undefined; }
 }
 
+// ============ 书签数并发限流 (本站允许较高并发，命中 429 走 backoff) ============
+// 实测：~5.5 req/s 连续请求不触发 429。这里用令牌桶保守限 ~4 req/s、并发上限 4。
+const BM_RATE = 4;          // 令牌/秒 → ~4 req/s
+const BM_BURST = 4;         // 令牌桶容量（允许启动时少量突发）
+const BM_CONCURRENCY = 4;   // 最大在途并发
+let bmInFlight = 0, bmTokens = BM_BURST, bmLast = Date.now();
+async function bmAcquire() {
+    while (limited()) await sleep(Math.min(until - Date.now(), 500));
+    while (bmInFlight >= BM_CONCURRENCY) await sleep(60);
+    bmInFlight++;
+    for (;;) {
+        const now = Date.now();
+        bmTokens = Math.min(BM_BURST, bmTokens + (now - bmLast) / 1000 * BM_RATE);
+        bmLast = now;
+        if (bmTokens >= 1) { bmTokens -= 1; break; }
+        await sleep(Math.max(50, (1 - bmTokens) / BM_RATE * 1000));
+    }
+}
+function bmRelease() { bmInFlight--; }
+
 const API = {
     // Sukebei 磁力批量查询 (外部站点)
     async sukebei(input) {
@@ -146,17 +166,22 @@ const API = {
         return p;
     },
 
-    // 书签数 (打本站 → 串行节流 + 429 退避)
+    // 书签数 (打本站 → 并发限流 + 429 退避)
     async bookmark(code) {
         if (bookmarkCache.has(code)) return bookmarkCache.get(code);
         if (pending.bm.has(code)) return pending.bm.get(code);
-        const p = throttle(true, async () => {
-            const res = await fetch(`/articles/${encodeURIComponent(code)}`, { credentials: 'same-origin' });
-            if (res.status === 429) return backoff(), undefined;
-            if (!res.ok) return undefined;
-            const m = (await res.text()).match(/"bookmark_count"\s*:\s*(\d+)/);
-            return m ? +m[1] : null;
-        }).then(v => {
+        const p = (async () => {
+            await bmAcquire();
+            try {
+                const res = await fetch(`/articles/${encodeURIComponent(code)}`, { credentials: 'same-origin' });
+                if (res.status === 429) return backoff(), undefined;
+                if (!res.ok) return undefined;
+                const m = (await res.text()).match(/"bookmark_count"\s*:\s*(\d+)/);
+                return m ? +m[1] : null;
+            } finally {
+                bmRelease();
+            }
+        })().then(v => {
             if (v !== undefined) bookmarkCache.set(code, v);
             pending.bm.delete(code);
             return v;
@@ -165,14 +190,12 @@ const API = {
         return p;
     },
 
-    // 批次查书签数：串行，命中 429 立即停止
+    // 批次查书签数：并发拉取，受 bmAcquire/bmRelease 限流控制；命中 429 由 backoff 统一暂停
     async bookmarkBatch(codes) {
         if (!bookmarkEnabled || limited()) return;
-        for (const c of new Set(codes)) {
-            if (limited()) break;
-            if (bookmarkCache.has(c)) continue;
-            await this.bookmark(c);
-        }
+        const todo = [...new Set(codes)].filter(c => !bookmarkCache.has(c));
+        if (!todo.length) return;
+        await Promise.all(todo.map(c => this.bookmark(c)));
     }
 };
 

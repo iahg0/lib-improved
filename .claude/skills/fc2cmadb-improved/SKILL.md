@@ -9,7 +9,7 @@ description: 当需要修改、维护或审查 FC2CMADB-improved.js（一个针�
 
 ## 硬性规则（必须遵守）
 
-1. **修改完必须递增版本号**：任何对 `FC2CMADB-improved.js` 的改动（包括仅改注释/描述），提交前必须递增文件头部 `// @version` 字段（当前 `1.3.1`，采用 `主.次.修订` 语义）。
+1. **修改完必须递增版本号**：任何对 `FC2CMADB-improved.js` 的改动（包括仅改注释/描述），提交前必须递增文件头部 `// @version` 字段（当前 `1.4.0`，采用 `主.次.修订` 语义）。
    - 没有版本号变更，Tampermonkey 不会触发更新检测，改动不会推送到已安装用户。
    - 历史上就是用 "Bump version" 来触发 Tampermonkey 更新（见 git log `563c914`）。
 2. 保持脚本为**单文件、IIFE 包裹**（`(function() { 'use strict'; ... })()`），不要拆分。
