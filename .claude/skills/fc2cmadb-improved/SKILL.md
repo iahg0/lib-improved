@@ -152,6 +152,13 @@ python tools/fc2_lint.py --json    # 输出 JSON（供脚本/CI）
 6. **不要做“补页”**：曾用 `fillTo30` 从后续页拉项目补当前页，导致跨页重复，且把后续页的
    项目从它们原生页移除而变空（“第二页没项目，第三页有数据”）。现已移除该逻辑，
    `hideNoMagnet` 只过滤当前页，各页独立稳定。
+7. **无图卡片 cover.jpg 兜底必须懒加载**：站点卡片 `<img>` 在“未登录”或“真实缩略图失效
+   (onError)”时都会回退到 `/storage/images/article/no-image.jpg`（`isNoImage` 据此判断）。
+   曾对整页所有无图卡片一次性请求 baihuse 明细页（未登录时整页 30 张全是 no-image），
+   瞬间打出大量请求，把 baihuse 打爆并拖垮详情页预览（详情页预览同样依赖 baihuse）。
+   必须用 `IntersectionObserver` 懒加载（`setupCoverFallback`，卡片进入视口才请求），
+   并保留 `error` 兜底；`fetchCover` 里 `data-fc2Cover` 防同编号重复请求。
+   改动此项时不要退回“整页一次性请求”。
 
 
 ## 修改流程建议

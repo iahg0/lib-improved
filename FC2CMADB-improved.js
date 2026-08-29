@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC2CMADB-improved
 // @namespace    [https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved](https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved)
-// @version      1.4.11
+// @version      1.4.12
 // @description  参考Duckee KememChan的fc2脚本用AI重构(精简版)
 // @author       Awei
 // @icon         [https://fc2cmadb.com/favicon.ico](https://fc2cmadb.com/favicon.ico)
@@ -248,6 +248,58 @@ function applyBookmarkSort() {
     });
 }
 
+// ============ 无图/坏图卡片封面兜底（懒加载，避免一次性打爆 baihuse） ============
+// 站点卡片 <img> 在"未登录"或"真实缩略图失效(onError)"时都会回退到
+// /storage/images/article/no-image.jpg。对这类无图卡片，从 baihuse 明细页取
+// cover.jpg 作为封面（与详情页预览图同一来源）。
+function isNoImage(img) {
+    const src = (img.getAttribute('src') || img.src || '').trim();
+    return src.includes('no-image');
+}
+
+// 请求 baihuse 明细页并替换无图封面（data-fc2Cover 防同编号重复请求）
+function fetchCover(img, code) {
+    if (img.dataset.fc2Cover === code || !img.isConnected) return;
+    if (!isNoImage(img)) return;              // 已有真实图（站点可能已渲染出来）则不动
+    img.dataset.fc2Cover = code;
+    API.baihuse(code).then(media => {
+        if (!img.isConnected) return;
+        const cover = media.images.find(s => /cover\.jpg$/i.test(s)) || media.images[0];
+        if (!cover || !isNoImage(img)) return; // 请求期间站点已补上真实图则放弃覆盖
+        img.src = cover;
+        img.removeAttribute('srcset');
+        img.removeAttribute('data-srcset');
+        img.removeAttribute('data-src');
+    });
+}
+
+// 懒加载封面：仅在卡片进入视口时才请求 cover.jpg。不能一次性对整页所有无图卡片请求
+// baihuse 明细页（未登录时整页全是 no-image），那会把 baihuse 打爆、拖垮详情页预览
+// （详情页预览同样依赖 baihuse），所以必须走 IntersectionObserver。
+let coverObserver = null;
+function setupCoverFallback(img, code) {
+    if (!img || !code) return;
+    if (!img.dataset.fc2CoverBound) {
+        img.dataset.fc2CoverBound = '1';
+        // 真实缩略图失效时站点 onError 会回退到 no-image.jpg，这里补一次兜底
+        img.addEventListener('error', () => setTimeout(() => fetchCover(img, code), 0));
+    }
+    if (!('IntersectionObserver' in window)) { fetchCover(img, code); return; }
+    if (!coverObserver) {
+        coverObserver = new IntersectionObserver(entries => {
+            entries.forEach(en => {
+                if (!en.isIntersecting) return;
+                coverObserver.unobserve(en.target);
+                fetchCover(en.target, en.target.dataset.fc2CoverCode);
+            });
+        }, { rootMargin: '200px' });
+    }
+    if (img.dataset.fc2CoverCode !== code) {
+        img.dataset.fc2CoverCode = code;
+        coverObserver.observe(img);
+    }
+}
+
 // 详情页预览图点击放大 (lightbox)
 function bindLightbox(container) {
     container.querySelectorAll('img.fc2-media').forEach(img => {
@@ -348,7 +400,8 @@ const App = {
         const seenCodes = new Set();
         document.querySelectorAll('a[href*="/articles/"]').forEach(link => {
             const m = link.href.match(/\/articles\/(\d{6,8})/);
-            const anchor = m && link.querySelector('img')?.parentElement;
+            const img = m && link.querySelector('img');
+            const anchor = img?.parentElement;
             if (!anchor || anchor.dataset.fc2P === m[1]) return;
             // 防重复：同一编号只处理第一处；若页面已有同编号卡片，则移除重复项
             if (seenCodes.has(m[1]) || document.querySelector(`[data-fc2P="${m[1]}"]`)) {
@@ -359,7 +412,7 @@ const App = {
             seenCodes.add(m[1]);
             const figure = link.closest('.rounded-lg') || link.closest('.bg-gray-800') || link.parentElement;
             if (!figure || !figure.isConnected) return;
-            entries.push({ code: m[1], figure });
+            entries.push({ code: m[1], figure, img });
         });
         if (!entries.length) return;
 
@@ -384,6 +437,7 @@ const App = {
         // 为保留的卡片创建(或复用)增强按钮行
         const keptCodes = [];
         keep.forEach(e => {
+            setupCoverFallback(e.img, e.code);   // 无图/坏图卡片：用 baihuse cover.jpg 作封面（懒加载）
             const row = wrapCardRow(e.figure, e.code);
             if (!row) return;
             if (!map.has(e.code)) { map.set(e.code, []); keptCodes.push(e.code); }
