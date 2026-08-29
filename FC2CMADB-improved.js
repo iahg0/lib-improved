@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC2CMADB-improved
 // @namespace    [https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved](https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved)
-// @version      1.4.6
+// @version      1.4.7
 // @description  参考Duckee KememChan的fc2脚本用AI重构(精简版)
 // @author       Awei
 // @icon         [https://fc2cmadb.com/favicon.ico](https://fc2cmadb.com/favicon.ico)
@@ -188,6 +188,7 @@ const API = {
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch (e) { return d; } };
 let hideNoMagnet = load('fc2-hide-no-magnet', false);
 let bookmarkEnabled = load('fc2-bookmark-enabled', true);
+let sortByBookmark = load('fc2-sort-by-bookmark', false);
 
 function makeToggle(id, label, key, onChange) {
     let el = document.getElementById(id);
@@ -208,6 +209,35 @@ function makeToggle(id, label, key, onChange) {
 function applyMagnetFilter() {
     document.querySelectorAll('.fc2-custom-card-wrapper').forEach(w => {
         w.style.display = hideNoMagnet && w.dataset.fc2HasMagnet !== 'true' ? 'none' : '';
+    });
+}
+
+// Sort complete cards (rather than just their image wrappers), keeping items with an
+// unavailable bookmark count at the end.  Remembering the initial index lets the
+// toggle restore the site's natural order without another page load.
+function applyBookmarkSort() {
+    const groups = new Map();
+    const codeOf = card => (card.matches('.fc2-custom-card-wrapper') ? card : card.querySelector('.fc2-custom-card-wrapper'))?.dataset.code;
+    document.querySelectorAll('.fc2-custom-card-wrapper[data-code]').forEach((wrap, index) => {
+        const card = wrap.closest('.card') || wrap;
+        const parent = card.parentElement;
+        if (!parent || !card.isConnected) return;
+        if (!card.dataset.fc2BookmarkOrder) card.dataset.fc2BookmarkOrder = String(index);
+        if (!groups.has(parent)) groups.set(parent, []);
+        groups.get(parent).push(card);
+    });
+    groups.forEach(cards => {
+        cards.sort((a, b) => {
+            if (!sortByBookmark) return Number(a.dataset.fc2BookmarkOrder) - Number(b.dataset.fc2BookmarkOrder);
+            const av = bookmarkCache.get(codeOf(a));
+            const bv = bookmarkCache.get(codeOf(b));
+            const an = typeof av === 'number', bn = typeof bv === 'number';
+            if (an && bn) return bv - av || Number(a.dataset.fc2BookmarkOrder) - Number(b.dataset.fc2BookmarkOrder);
+            if (an) return -1;
+            if (bn) return 1;
+            return Number(a.dataset.fc2BookmarkOrder) - Number(b.dataset.fc2BookmarkOrder);
+        });
+        cards.forEach(card => card.parentElement.appendChild(card));
     });
 }
 
@@ -370,6 +400,7 @@ const App = {
             });
         });
         applyMagnetFilter();
+        applyBookmarkSort();
 
         // 只对保留(有磁力)的项目请求书签数
         API.bookmarkBatch(keptCodes).then(() => {
@@ -379,6 +410,7 @@ const App = {
                 const t = v === null ? '-' : String(v);
                 document.querySelectorAll(`.fc2-bookmark-value[data-code="${code}"]`).forEach(el => el.textContent = t);
             });
+            applyBookmarkSort();
         });
     },
 
@@ -422,6 +454,11 @@ const App = {
             if (!on) document.querySelectorAll('.fc2-bookmark-value[data-code]').forEach(el => { if (el.textContent === '…') el.textContent = '-'; });
         });
         if (bookmarkEnabled) bt.classList.add('fc2-toggle-on');
+        const st = makeToggle('fc2-sort-toggle', '按书签数排序', 'fc2-sort-by-bookmark', on => {
+            sortByBookmark = on;
+            applyBookmarkSort();
+        });
+        if (sortByBookmark) st.classList.add('fc2-toggle-on');
         this.renderList();
         if (location.href.includes('/articles/')) this.renderDetail();
     }
