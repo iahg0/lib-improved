@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC2CMADB-improved
 // @namespace    [https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved](https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved)
-// @version      1.4.8
+// @version      1.4.9
 // @description  参考Duckee KememChan的fc2脚本用AI重构(精简版)
 // @author       Awei
 // @icon         [https://fc2cmadb.com/favicon.ico](https://fc2cmadb.com/favicon.ico)
@@ -42,7 +42,7 @@ const CSS = `
 .fc2-toggle-on .fc2-toggle-track::after{transform:translateX(16px)}
 #fc2-rate-limit-toast{position:fixed;bottom:20px;right:20px;z-index:2147483647;background:rgba(220,38,38,.92);color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;box-shadow:0 8px 32px rgba(0,0,0,.4);display:none;max-width:340px}
 #fc2-lightbox{position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.9);display:none;align-items:center;justify-content:center;cursor:zoom-out;padding:20px;box-sizing:border-box}
-#fc2-lightbox img{max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;box-shadow:0 0 40px rgba(0,0,0,.6)}
+#fc2-lightbox img{max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;box-shadow:0 0 40px rgba(0,0,0,.6);cursor:zoom-out}
 `;
 GM_addStyle(CSS);
 
@@ -248,6 +248,31 @@ function applyBookmarkSort() {
     });
 }
 
+// 判断卡片图片是否为站点的 no-image 占位图（image_url 为空或真实缩略图加载失败时）
+function isNoImage(img) {
+    const src = img.getAttribute('src') || img.src || '';
+    return src.includes('no-image.jpg');
+}
+
+// 无图/坏图卡片：外层列表显示 no-image.jpg 时，尝试从 baihuse 明细页读取 cover.jpg 作为封面
+function setupCoverFallback(img, code) {
+    const attempt = () => {
+        if (img.dataset.fc2Cover === code || !img.isConnected) return;
+        if (!isNoImage(img)) return;
+        img.dataset.fc2Cover = code;
+        API.baihuse(code).then(media => {
+            const cover = media.images.find(s => /cover\.jpg$/i.test(s)) || media.images[0];
+            if (cover && img.isConnected) {
+                img.src = cover;
+                img.removeAttribute('srcset');
+            }
+        });
+    };
+    attempt();
+    // 真实缩略图失效时站点 onError 会回退到 no-image.jpg，这里补一次兜底
+    img.addEventListener('error', () => setTimeout(attempt, 0));
+}
+
 // 详情页预览图点击放大 (lightbox)
 function bindLightbox(container) {
     container.querySelectorAll('img.fc2-media').forEach(img => {
@@ -259,7 +284,8 @@ function bindLightbox(container) {
             if (!box) {
                 box = document.createElement('div');
                 box.id = 'fc2-lightbox';
-                box.addEventListener('click', e => { if (e.target === box) box.style.display = 'none'; });
+                // 单击图片本身也可关闭（不再要求点图片旁边的空白区域）
+                box.addEventListener('click', () => box.style.display = 'none');
                 document.body.appendChild(box);
             }
             box.innerHTML = `<img src="${img.src}" alt=""/>`;
@@ -348,7 +374,8 @@ const App = {
         const seenCodes = new Set();
         document.querySelectorAll('a[href*="/articles/"]').forEach(link => {
             const m = link.href.match(/\/articles\/(\d{6,8})/);
-            const anchor = m && link.querySelector('img')?.parentElement;
+            const img = m && link.querySelector('img');
+            const anchor = img?.parentElement;
             if (!anchor || anchor.dataset.fc2P === m[1]) return;
             // 防重复：同一编号只处理第一处；若页面已有同编号卡片，则移除重复项
             if (seenCodes.has(m[1]) || document.querySelector(`[data-fc2P="${m[1]}"]`)) {
@@ -357,6 +384,7 @@ const App = {
             }
             anchor.dataset.fc2P = m[1];
             seenCodes.add(m[1]);
+            setupCoverFallback(img, m[1]);   // 无图/坏图卡片：用明细页 cover.jpg 作为封面
             const figure = link.closest('.rounded-lg') || link.closest('.bg-gray-800') || link.parentElement;
             if (!figure || !figure.isConnected) return;
             entries.push({ code: m[1], figure });
