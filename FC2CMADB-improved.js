@@ -9,8 +9,8 @@
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
 // @license      MIT
-// @downloadURL https://raw.githubusercontent.com/iahg0/FC2CMADB-improved/master/FC2CMADB-improved.js
-// @updateURL https://raw.githubusercontent.com/iahg0/FC2CMADB-improved/master/FC2CMADB-improved.js
+// @downloadURL https://raw.githubusercontent.com/iahg0/lib-improved/master/FC2CMADB-improved.js
+// @updateURL https://raw.githubusercontent.com/iahg0/lib-improved/master/FC2CMADB-improved.js
 // ==/UserScript==
 (function() {
 'use strict';
