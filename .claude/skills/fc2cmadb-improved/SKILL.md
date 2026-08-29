@@ -9,7 +9,7 @@ description: 当需要修改、维护或审查 FC2CMADB-improved.js（一个针�
 
 ## 硬性规则（必须遵守）
 
-1. **修改完必须递增版本号**：任何对 `FC2CMADB-improved.js` 的改动（包括仅改注释/描述），提交前必须递增文件头部 `// @version` 字段（以文件头部 `// @version` 为准，当前 `1.4.5`，采用 `主.次.修订` 语义）。
+1. **修改完必须递增版本号**：任何对 `FC2CMADB-improved.js` 的改动（包括仅改注释/描述），提交前必须递增文件头部 `// @version` 字段（以文件头部 `// @version` 为准，当前 `1.4.6`，采用 `主.次.修订` 语义）。
    - 没有版本号变更，Tampermonkey 不会触发更新检测，改动不会推送到已安装用户。
    - 历史上就是用 "Bump version" 来触发 Tampermonkey 更新（见 git log `563c914`）。
 2. 保持脚本为**单文件、IIFE 包裹**（`(function() { 'use strict'; ... })()`），不要拆分。
@@ -82,11 +82,11 @@ fc2cmadb.com 是 **Laravel + Inertia + Livewire** 的 SPA：
 ### 开关（localStorage）
 - `hideNoMagnet`：`fc2-hide-no-magnet`（隐藏无磁力项目，默认 false）
 - `bookmarkEnabled`：`fc2-bookmark-enabled`（默认 true）
-- `sortByBookmark`：`fc2-sort-by-bookmark`（按书签数排序，默认 false）
-- 三者经 `makeToggle()` 生成悬浮开关按钮，持久化到 localStorage。
+- 两者经 `makeToggle()` 生成悬浮开关按钮，持久化到 localStorage。
+  （「按书签数排序」`fc2-sort-by-bookmark` 已移除——排序会让卡片在书签数异步返回后跳跃换位，用户不需要。）
 
 ### 渲染（`App` 对象）
-- `renderList()`：列表页增强。流程 = 扫描卡片 → `API.sukebei` 预查磁力 →（若 `hideNoMagnet` 则移除无磁力整卡并调用 `fillTo30` 分页填充）→ 为保留卡片包装 `fc2-custom-card-wrapper` + 按钮行 → 填磁力/书签信息 → 仅对有磁力项目 `bookmarkBatch`。
+- `renderList()`：列表页增强。流程 = 扫描卡片 → `API.sukebei` 预查磁力 →（若 `hideNoMagnet` 则仅移除无磁力整卡，**不补页**）→ 为保留卡片包装 `fc2-custom-card-wrapper` + 按钮行 → 填磁力/书签信息 → 仅对有磁力项目 `bookmarkBatch`。
 - `renderDetail()`：详情页增强（MissAV/Njav/Sukebei 磁力按钮 + 预览图/视频 lightbox）。
 - `init()`：初始化开关 + 调用 renderList / renderDetail。
 - SPA 监听：`MutationObserver` 在 URL 变化时 800ms 后 `App.init()`，否则 200ms 防抖 `App.renderList()`。
@@ -94,13 +94,12 @@ fc2cmadb.com 是 **Laravel + Inertia + Livewire** 的 SPA：
 ### 关键辅助函数（新增功能不要破坏这些）
 - `inertiaMeta()`：读取 data-page JSON 的 component/version/url。
 - `fetchPageData(meta, page)`：Inertia 拉取指定页 articles。
-- `fillTo30(keep, container)`：有磁力项目不足 30 时自动逐页拉取并注入有磁力卡片（隐藏模式才生效）。
-- `injectCard(container, item)`：按站点卡片结构注入新卡片，并给 img 父元素打 `data-fc2P` 标记避免重复包装。
 - `findListContainer(firstFigure)`：定位列表 flex-wrap 容器。
-- `wrapCardRow(card, code)`：创建/复用增强按钮行。
+- `wrapCardRow(figure, code)`：创建/复用增强按钮行。**只包 `<figure>`（图片区）**，wrapper 深色圆角卡片 + 底部按钮行，标题 `card-body` 留在 wrapper 外由站点正常渲染。
 - `applyMagnetFilter()`：对 `.fc2-custom-card-wrapper` 按 `data-fc2HasMagnet` 显示/隐藏。
-- `sortCards()` / `findGridContainer()`：按书签数排序（依赖 grid 容器，flex 布局下为 fallback）。
 - 防重复标记：卡片锚点 `data-fc2P`（被包装后再次 renderList 会跳过）。
+- 说明：`fillTo30` / `injectCard` / `sortCards` / `findGridContainer` 已移除（补页导致跨页重复与后续页被清空；排序导致卡片跳位）。
+
 
 ## 站点请求探查工具
 
@@ -133,35 +132,26 @@ python tools/fc2_lint.py --json    # 输出 JSON（供脚本/CI）
 ```
 
 覆盖项：`@version` 版本号、IIFE 包裹、未授权 `@grant`、磁力判断 `!!(s && s.magnet)`、
-`data-fc2P` 防重复标记、`seenCodes`/`[data-code]` 去重、`wrapCardRow` 整卡包装
-（`figure.closest('.card')`）、外部跨域走 `GM_xmlhttpRequest`（禁止第三方 `fetch`）、
-`node --check` 语法。命中 FAIL 先修再提交。
+`data-fc2P` 防重复标记、`seenCodes` 按编号去重、外部跨域走 `GM_xmlhttpRequest`
+（禁止第三方 `fetch`）、`node --check` 语法。命中 FAIL 先修再提交。
 
-## 列表页渲染：易卡住的点（改 renderList / wrapCardRow / fillTo30 前必读）
+## 列表页渲染：易卡住的点（改 renderList / wrapCardRow 前必读）
 
 这些是本项目踩过的坑，改动后要用 `fc2_lint.py` 校验：
 
-1. **必须整卡包装**：`wrapCardRow` 收到的是 `figure`（`.rounded-lg`），
-   **必须**先 `figure.closest('.card')` 取整卡再包进 `fc2-custom-card-wrapper`。
-   若只包 `figure`，`card-body`（标题）会留在 wrapper 外，出现“标题在上、图片在下”
-   的错位，且 SPA 重渲染时易产生重复卡片。wrapper 应保持**透明**，让 `.card` 保留
-   站点底色 `bg-base-100`（别给整卡加深色背景，否则变黑底）。
-2. **宽度/内边距类要转移到 wrapper**：整卡包装后，`.card` 上的响应式宽度/内边距类
-   （`xl:max-w-1/6 lg:max-w-1/5 md:w-1/4 sm:w-1/3 w-1/2 p-2`、`h-full`）必须
-   `sizing.forEach(c => card.classList.remove(c))` 从卡片移除并加到 wrapper，
-   否则 wrapper 会占满整行、网格排版被破坏。
-3. **按编号去重**：`renderList` 用 `seenCodes` 去重，`wrapCardRow`/`fillTo30` 用
-   `document.querySelector('.fc2-custom-card-wrapper[data-code="..."]')` 查重，
-   重复卡片直接移除。配合 `data-fc2P` 锚点标记，可同时防“同页重复”与“跨渲染重复”。
+1. **wrapCardRow 只包 `<figure>`（图片区）**：把 figure 包进 `fc2-custom-card-wrapper`
+   （wrapper 深色圆角卡片 + 底部按钮行），标题 `card-body` 留在 wrapper 外由站点正常渲染。
+   不要改成整卡包装——那会让标题进 wrapper 并把整卡染成深色（黑底）。
+2. **保持网格排版**：wrapper 是 `.card` 内部的 flex 子项，不要把宽度/内边距类
+   （`xl:max-w-1/6 lg:max-w-1/5 md:w-1/4 sm:w-1/3 w-1/2 p-2`、`h-full`）从 `.card`
+   挪走，否则网格会被破坏。
+3. **按编号去重**：`renderList` 用 `seenCodes` 去重 + 卡片锚点 `data-fc2P` 标记，
+   同一编号只处理一处、重复卡片直接移除。可同时防“同页重复”与“跨渲染重复”。
 4. **磁力判断统一**：一律用 `!!(s && s.magnet)`（`s` 来自 `seedCache.get(...)`）。
 5. **外部跨域走 GM_xmlhttpRequest**：不要对 sukebei/baihuse 等直接 `fetch`。
-6. **fillTo30 补页的两个坑**（都源于“从后续页拉项目补当前页”）：
-   - **去重状态不能是局部变量**：`renderList` 会被 MutationObserver 反复触发，若每次重建
-     局部 seen，会重复注入同一批项目（“不断填充/越填越多”）。须用**会话级 `injectedCodes`
-     （Set）** + `injectCard` 查重，并**先收集再一次注入**。
-   - **补进来的项目属后续页，翻到那些页会原生重复**（“第三页看到第二页的”）。给注入卡片打
-     `data-fc2Injected` 标记并入 `injectedCodes`；`renderList` 扫描到
-     `injectedCodes.has(code)` 且非 `data-fc2Injected` 的原生卡片时直接移除。
+6. **不要做“补页”**：曾用 `fillTo30` 从后续页拉项目补当前页，导致跨页重复，且把后续页的
+   项目从它们原生页移除而变空（“第二页没项目，第三页有数据”）。现已移除该逻辑，
+   `hideNoMagnet` 只过滤当前页，各页独立稳定。
 
 
 ## 修改流程建议

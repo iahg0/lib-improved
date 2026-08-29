@@ -102,22 +102,14 @@ def run_lint(path):
         "卡片锚点须打 data-fc2P 标记，避免重复包装。"
     ))
 
-    # 7. 按编号去重（renderList seenCodes / data-code 查重）
+    # 7. 按编号去重（renderList seenCodes + data-fc2P 防重复）
     has_seen = "seenCodes" in src
-    has_datacode = re.search(r"\.fc2-custom-card-wrapper\[data-code=", src) is not None
-    dedup_ok = has_seen and has_datacode
+    has_fc2p = "data-fc2P" in src
+    dedup_ok = has_seen and has_fc2p
     checks.append(Check(
         "按编号去重", "ERROR", dedup_ok,
-        "renderList 应有 seenCodes 去重，且 wrapCardRow/fillTo30 用 [data-code=...] 查重，"
+        "renderList 应有 seenCodes 按编号去重，卡片锚点打 data-fc2P 防重复包装，"
         "否则会再次出现重复卡片。"
-    ))
-
-    # 8. wrapCardRow 整卡包装
-    whole_card = re.search(r"figure\.closest\('\.card'\)", src) is not None
-    checks.append(Check(
-        "wrapCardRow 整卡包装", "ERROR", whole_card,
-        "wrapCardRow 必须整卡(.card)包装（figure.closest('.card')），否则标题游离在 wrapper 外，"
-        "会再次出现'标题在上/图片在下'的错位。"
     ))
 
     # 9. 外部跨域走 GM_xmlhttpRequest

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC2CMADB-improved
 // @namespace    [https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved](https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved)
-// @version      1.4.5
+// @version      1.4.6
 // @description  参考Duckee KememChan的fc2脚本用AI重构(精简版)
 // @author       Awei
 // @icon         [https://fc2cmadb.com/favicon.ico](https://fc2cmadb.com/favicon.ico)
@@ -24,8 +24,9 @@ const CSS = `
 .fc2-btn-missav{color:#ff9e9e}.fc2-btn-njav{color:#a78bfa}.fc2-btn-sukebei{color:#ffda9e}.fc2-btn-magnet{color:#9eecff;background:rgba(59,130,246,.2)}
 .fc2-preview-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:15px}
 .fc2-media{width:100%;height:auto;border-radius:8px;object-fit:cover;box-shadow:0 4px 10px rgba(0,0,0,.2);background:#1a1a2e}
-.fc2-custom-card-wrapper{display:flex;flex-direction:column;border-radius:12px;overflow:hidden}
-.fc2-original-card-override{border:none!important;box-shadow:none!important;border-radius:12px 12px 0 0!important;flex-grow:1}
+.fc2-custom-card-wrapper{display:flex;flex-direction:column;background:rgba(30,41,59,.5);border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;transition:transform .2s,box-shadow .2s}
+.fc2-custom-card-wrapper:hover{transform:translateY(-4px);box-shadow:0 12px 24px rgba(0,0,0,.4)}
+.fc2-original-card-override{background:transparent!important;border:none!important;box-shadow:none!important;border-radius:12px 12px 0 0!important;flex-grow:1}
 .fc2-card-btn-row{display:flex;gap:8px;flex-wrap:wrap;padding:12px;width:100%;background:rgba(15,23,42,.7);border-top:1px solid rgba(255,255,255,.05);margin-top:auto;justify-content:center;position:relative;z-index:20}
 .fc2-card-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;padding:5px 10px;border-radius:6px;font-size:11px;font-weight:600;text-decoration:none!important;transition:all .2s ease}
 .fc2-card-btn:hover{transform:translateY(-2px);filter:brightness(1.2)}
@@ -187,7 +188,6 @@ const API = {
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch (e) { return d; } };
 let hideNoMagnet = load('fc2-hide-no-magnet', false);
 let bookmarkEnabled = load('fc2-bookmark-enabled', true);
-let sortByBookmark = load('fc2-sort-by-bookmark', false);
 
 function makeToggle(id, label, key, onChange) {
     let el = document.getElementById(id);
@@ -209,45 +209,6 @@ function applyMagnetFilter() {
     document.querySelectorAll('.fc2-custom-card-wrapper').forEach(w => {
         w.style.display = hideNoMagnet && w.dataset.fc2HasMagnet !== 'true' ? 'none' : '';
     });
-}
-
-// 向上查找最近一个 display:grid / inline-grid 的容器 (即卡片列表的网格容器)
-function findGridContainer(el) {
-    let cur = el.parentElement;
-    while (cur && cur !== document.body) {
-        const d = getComputedStyle(cur).display;
-        if (d === 'grid' || d === 'inline-grid') return cur;
-        cur = cur.parentElement;
-    }
-    return null;
-}
-
-// 按书签数降序排序卡片 (未获取到书签数的排最后)
-// 注意: 卡片可能被外层容器包裹 (.fc2-custom-card-wrapper 并非 grid 直接子元素)，
-// 因此必须基于真正的 grid 容器，重新排列每个卡片对应的"顶层 grid 项"，
-// 否则会把所有 wrapper 塞进第一个格子里，导致全部挤到第一列。
-function sortCards() {
-    if (!sortByBookmark) return;
-    const wrappers = [...document.querySelectorAll('.fc2-custom-card-wrapper')];
-    if (!wrappers.length) return;
-
-    // 优先找 grid 容器；找不到则退回原逻辑 (flex 或简单块级布局)
-    const container = findGridContainer(wrappers[0]) || wrappers[0].parentElement;
-    if (!container) return;
-
-    // 计算每个 wrapper 在容器中的顶层单元 (容器直接子元素)
-    const items = wrappers.map(w => {
-        let el = w;
-        while (el.parentElement && el.parentElement !== container) el = el.parentElement;
-        return { wrap: w, top: el };
-    });
-
-    items.sort((a, b) => {
-        const va = bookmarkCache.get(a.wrap.dataset.code), vb = bookmarkCache.get(b.wrap.dataset.code);
-        const na = va === undefined || va === null ? -1 : va;
-        const nb = vb === undefined || vb === null ? -1 : vb;
-        return nb - na;
-    }).forEach(it => container.appendChild(it.top));
 }
 
 // 详情页预览图点击放大 (lightbox)
@@ -284,8 +245,8 @@ function inertiaMeta() {
 }
 
 // 通过 Inertia partial reload 请求指定页的 articles 数据，返回 { data, last_page, ... } 或 null
-// 注意：fillTo30 会逐页调用本函数，必须纳入本站节流 (throttle self) + 429 退避，
-// 否则翻页时会产生不受限流的连续请求，极易触发站点限流导致强制登出。
+// 注意：请求必须纳入本站节流 (throttle self) + 429 退避，
+// 否则会产生不受限流的连续请求，极易触发站点限流导致强制登出。
 async function fetchPageData(meta, page) {
     const url = new URL(meta.url || location.href, location.origin);
     url.searchParams.set('page', String(page));
@@ -313,98 +274,21 @@ function findListContainer(firstFigure) {
         || null;
 }
 
-// 按站点卡片结构注入一张新卡片，返回其中的 figure (.rounded-lg) 供后续包装
-// 若页内已存在同编号卡片则返回 null（不重复注入）。
-function injectCard(container, item, markInjected) {
-    const id = item.video_id;
-    if (document.querySelector(`[data-fc2P="${id}"], .fc2-custom-card-wrapper[data-code="${id}"]`)) return null;  // 防重复
-    const img = item.image_url || '/storage/images/article/no-image.jpg';
-    const title = item.title || '';
-    const div = document.createElement('div');
-    div.className = 'card bg-base-100 xl:max-w-1/6 lg:max-w-1/5 md:w-1/4 sm:w-1/3 w-1/2 p-2 card-sm hover:bg-base-300 dark:hover:bg-gray-800';
-    div.innerHTML =
-        '<figure class="relative h-48 bg-base-200 rounded-lg">' +
-            `<a class="block rounded overflow-hidden" href="/articles/${id}">` +
-                `<img class="object-contain object-center w-full h-full block transition duration-300 ease-in-out" src="${img}" loading="lazy" alt="">` +
-            '</a>' +
-            `<span class="absolute top-0 left-0 text-sm text-white bg-gray-800 opacity-80 rounded-tl-lg px-1">${id}</span>` +
-        '</figure>' +
-        '<div class="card-body gap-0.5 p-1">' +
-            `<h2 class="card-title"><a class="link no-underline font-medium line-clamp-2" href="/articles/${id}">${escapeHtml(title)}</a></h2>` +
-        '</div>';
-    container.appendChild(div);
-    if (markInjected) div.dataset.fc2Injected = '1';   // 标记：fillTo30 补进来的，用于跨页去重
-    const imgEl = div.querySelector('img');
-    if (imgEl?.parentElement) imgEl.parentElement.dataset.fc2P = String(id);   // 标记已处理，避免重复包装
-    return div.querySelector('figure');
-}
-
-// 会话级：记录 fillTo30 已从后续页补进来展示过的编号，用于跨页去重（翻到那些页时移除重复项）
-const injectedCodes = new Set();
-
-// 若磁力项目不足 30 个，自动逐页请求后续文章并注入有磁力的卡片
-// 一次性把所有补的页拉完再统一注入，避免"不断填充"；并用 injectedCodes 防重复注入。
-async function fillTo30(keep, container) {
-    if (!container || !hideNoMagnet) return;
-    const target = 30;
-    const seen = new Set(keep.map(e => e.code));
-    for (const c of injectedCodes) seen.add(c);   // 已补过的不再重复补
-    if (seen.size >= target) return;
-    const meta = inertiaMeta();
-    if (!meta) return;
-    const cur = parseInt(new URL(meta.url || location.href, location.origin).searchParams.get('page') || '1', 10) || 1;
-    let page = cur + 1, last = Infinity;
-    const toInject = [];   // 先收集，再一次注入
-    while (seen.size < target && page <= last) {
-        const art = await fetchPageData(meta, page);
-        if (!art) break;
-        last = art.last_page || last;
-        const items = art.data || [];
-        if (!items.length) break;
-        const newCodes = items.map(i => String(i.video_id)).filter(c => !seen.has(c));
-        if (newCodes.length) await API.sukebei(newCodes);
-        for (const it of items) {
-            if (seen.size >= target) break;
-            const code = String(it.video_id);
-            if (seen.has(code)) continue;
-            seen.add(code);
-            const s = seedCache.get(code);
-            if (!(s && s.magnet)) continue;   // 隐藏模式：无磁力的不显示
-            if (document.querySelector(`[data-fc2P="${code}"], .fc2-custom-card-wrapper[data-code="${code}"]`)) continue;  // 防重复
-            toInject.push(it);
-        }
-        page++;
-    }
-    // 一次性注入全部有磁力项目
-    for (const it of toInject) {
-        const code = String(it.video_id);
-        const fig = injectCard(container, it, true);
-        if (fig) { injectedCodes.add(code); keep.push({ code, figure: fig }); }
-    }
-}
+// （已移除 fillTo30 补页：从后续页拉项目补当前页会导致跨页重复，并把后续页的项目
+//   从它们原生页移除而变空。隐藏无磁力时仅过滤当前页，各页独立稳定，不再注入后续页项目。）
 
 // 为单张卡片创建(或复用)增强按钮行，返回按钮行元素
-// 注意：把整张 .card（figure 图片 + card-body 标题）都包进 flex 列 wrapper，
-// 保证“图片在上、标题在下”；若只包 figure，标题会留在 wrapper 外，易造成错位/重复。
+// 恢复到"最开始"的样式：只包 <figure>（图片区），wrapper 深色圆角卡片 + 底部按钮行，
+// 标题(card-body)留在 wrapper 外、由站点正常渲染在图片下方。
 function wrapCardRow(figure, code) {
     let row;
-    const card = figure.closest('.card') || figure.parentElement;
-    // 防重复：页面已存在同编号 wrapper，说明当前卡片是重复项，直接移除
-    const existing = document.querySelector(`.fc2-custom-card-wrapper[data-code="${code}"]`);
-    if (existing && existing !== card?.parentElement) { card?.remove(); return null; }
-
-    if (card?.parentElement && !card.parentElement.classList.contains('fc2-custom-card-wrapper')) {
+    if (figure?.parentElement && !figure.parentElement.classList.contains('fc2-custom-card-wrapper')) {
         const wrap = document.createElement('div');
-        // 把卡片的响应式宽度/内边距/高度类转移到 wrapper，保持网格排版不被破坏
-        const sizing = (card.className.match(/(?:^|\s)(?:xl:|lg:|md:|sm:|w-|max-w-|h-|p-)[^\s]+/g) || [])
-            .map(s => s.trim()).filter(s => s !== 'h-full');
-        wrap.className = 'fc2-custom-card-wrapper ' + sizing.join(' ');
-        wrap.dataset.code = code;
-        if (card.classList.contains('h-full')) { card.classList.remove('h-full'); wrap.classList.add('h-full'); }
-        sizing.forEach(c => card.classList.remove(c));   // 从卡片移除已转移的宽度/内边距类
-        card.parentNode.insertBefore(wrap, card);
-        wrap.appendChild(card);
-        card.classList.add('fc2-original-card-override');
+        wrap.className = 'fc2-custom-card-wrapper'; wrap.dataset.code = code;
+        if (figure.classList.contains('h-full')) { figure.classList.remove('h-full'); wrap.classList.add('h-full'); }
+        figure.parentNode.insertBefore(wrap, figure);
+        wrap.appendChild(figure);
+        figure.classList.add('fc2-original-card-override');
         row = document.createElement('div');
         row.className = 'fc2-card-btn-row';
         row.addEventListener('click', e => e.stopPropagation());
@@ -415,8 +299,8 @@ function wrapCardRow(figure, code) {
             <a href="https://sukebei.nyaa.si/?f=0&c=0_0&q=${code}&s=seeders&o=desc" target="_blank" class="fc2-card-btn fc2-card-btn-sukebei fc2-sukebei-btn-${code}"><i class="fa-solid fa-magnifying-glass"></i> 搜索</a>
         `;
         wrap.appendChild(row);
-    } else if (card?.parentElement?.classList.contains('fc2-custom-card-wrapper')) {
-        row = card.parentElement.querySelector('.fc2-card-btn-row');
+    } else if (figure?.parentElement?.classList.contains('fc2-custom-card-wrapper')) {
+        row = figure.parentElement.querySelector('.fc2-card-btn-row');
     }
     return row;
 }
@@ -429,11 +313,6 @@ const App = {
             const m = link.href.match(/\/articles\/(\d{6,8})/);
             const anchor = m && link.querySelector('img')?.parentElement;
             if (!anchor || anchor.dataset.fc2P === m[1]) return;
-            // 跨页去重：该编号已在更早页面被 fillTo30 补进来展示过，当前页原生再出现则移除，避免重复
-            if (injectedCodes.has(m[1]) && !link.closest('[data-fc2Injected]')) {
-                link.closest('.card')?.remove();
-                return;
-            }
             // 防重复：同一编号只处理第一处；若页面已有同编号卡片，则移除重复项
             if (seenCodes.has(m[1]) || document.querySelector(`[data-fc2P="${m[1]}"]`)) {
                 link.closest('.card')?.remove();
@@ -459,8 +338,7 @@ const App = {
                 if (magnet.has(e.code)) keep.push(e);
                 else e.figure.closest('.card')?.remove();   // 无磁力：整卡移除，不留占位、不请求
             });
-            const anyFigure = entries.find(e => magnet.has(e.code))?.figure || entries[0]?.figure;
-            await fillTo30(keep, findListContainer(anyFigure));   // 不足 30 个则自动请求后续页
+            // 隐藏无磁力：仅过滤当前页，不请求后续页补页（fillTo30 已移除，避免跨页重复/后续页被清空）
         } else {
             keep.push(...entries);
         }
@@ -495,7 +373,6 @@ const App = {
 
         // 只对保留(有磁力)的项目请求书签数
         API.bookmarkBatch(keptCodes).then(() => {
-            sortCards();
             keptCodes.forEach(code => {
                 const v = bookmarkCache.get(code);
                 if (v === undefined) return;
@@ -545,8 +422,6 @@ const App = {
             if (!on) document.querySelectorAll('.fc2-bookmark-value[data-code]').forEach(el => { if (el.textContent === '…') el.textContent = '-'; });
         });
         if (bookmarkEnabled) bt.classList.add('fc2-toggle-on');
-        const st = makeToggle('fc2-sort-toggle', '按书签数排序', 'fc2-sort-by-bookmark', on => { sortByBookmark = on; if (on) sortCards(); });
-        if (sortByBookmark) st.classList.add('fc2-toggle-on');
         this.renderList();
         if (location.href.includes('/articles/')) this.renderDetail();
     }
