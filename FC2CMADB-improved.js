@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC2CMADB-improved
 // @namespace    [https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved](https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved)
-// @version      1.4.7
+// @version      1.4.8
 // @description  参考Duckee KememChan的fc2脚本用AI重构(精简版)
 // @author       Awei
 // @icon         [https://fc2cmadb.com/favicon.ico](https://fc2cmadb.com/favicon.ico)
@@ -80,11 +80,11 @@ async function throttle(self, task) {
     try { return await task(); } catch (e) { return undefined; }
 }
 
-// ============ 书签数并发限流 (本站允许较高并发，命中 429 走 backoff) ============
-// 实测：~5.5 req/s 连续请求不触发 429。这里用令牌桶保守限 ~4 req/s、并发上限 4。
-const BM_RATE = 4;          // 令牌/秒 → ~4 req/s
-const BM_BURST = 4;         // 令牌桶容量（允许启动时少量突发）
-const BM_CONCURRENCY = 4;   // 最大在途并发
+// ============ 书签数低频限流（详情页批量请求容易触发站点反自动化） ============
+// 书签数只在用户主动开启后查询；串行且每 5 秒最多一条。
+const BM_RATE = 0.2;        // 令牌/秒 → 1 req / 5 秒，避免触发站点反自动化
+const BM_BURST = 1;         // 不允许启动突发
+const BM_CONCURRENCY = 1;   // 详情页请求必须串行
 let bmInFlight = 0, bmTokens = BM_BURST, bmLast = Date.now();
 async function bmAcquire() {
     while (limited()) await sleep(Math.min(until - Date.now(), 500));
@@ -187,8 +187,12 @@ const API = {
 // ============ 开关 ============
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch (e) { return d; } };
 let hideNoMagnet = load('fc2-hide-no-magnet', false);
-let bookmarkEnabled = load('fc2-bookmark-enabled', true);
+// v2 deliberately defaults to off.  Bookmark counts require opening a detail
+// page for every card, which can otherwise trigger the site's rate limit.
+let bookmarkEnabled = load('fc2-bookmark-enabled-v2', false);
 let sortByBookmark = load('fc2-sort-by-bookmark', false);
+
+const isBookmarkRankingPage = () => /^\/articles\/bookmark-ranking\/?$/.test(location.pathname);
 
 function makeToggle(id, label, key, onChange) {
     let el = document.getElementById(id);
@@ -216,6 +220,9 @@ function applyMagnetFilter() {
 // unavailable bookmark count at the end.  Remembering the initial index lets the
 // toggle restore the site's natural order without another page load.
 function applyBookmarkSort() {
+    // This route is already ordered by the server and must never cause client-side
+    // detail-page activity or be reordered using incomplete cached values.
+    if (isBookmarkRankingPage()) return;
     const groups = new Map();
     const codeOf = card => (card.matches('.fc2-custom-card-wrapper') ? card : card.querySelector('.fc2-custom-card-wrapper'))?.dataset.code;
     document.querySelectorAll('.fc2-custom-card-wrapper[data-code]').forEach((wrap, index) => {
@@ -403,6 +410,9 @@ const App = {
         applyBookmarkSort();
 
         // 只对保留(有磁力)的项目请求书签数
+        // The server-side bookmark ranking already has the desired order.  Do not
+        // request every article detail page here: that reliably trips rate limits.
+        if (isBookmarkRankingPage()) return;
         API.bookmarkBatch(keptCodes).then(() => {
             keptCodes.forEach(code => {
                 const v = bookmarkCache.get(code);
@@ -449,7 +459,7 @@ const App = {
     init() {
         const mt = makeToggle('fc2-magnet-toggle', '仅显示有磁力链接的项目', 'fc2-hide-no-magnet', on => { hideNoMagnet = on; applyMagnetFilter(); });
         if (hideNoMagnet) mt.classList.add('fc2-toggle-on');
-        const bt = makeToggle('fc2-bookmark-toggle', '书签数查询', 'fc2-bookmark-enabled', on => {
+        const bt = makeToggle('fc2-bookmark-toggle', '书签数查询（低频）', 'fc2-bookmark-enabled-v2', on => {
             bookmarkEnabled = on;
             if (!on) document.querySelectorAll('.fc2-bookmark-value[data-code]').forEach(el => { if (el.textContent === '…') el.textContent = '-'; });
         });
