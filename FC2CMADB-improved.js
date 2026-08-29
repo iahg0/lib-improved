@@ -204,18 +204,43 @@ function applyMagnetFilter() {
     });
 }
 
+// 向上查找最近一个 display:grid / inline-grid 的容器 (即卡片列表的网格容器)
+function findGridContainer(el) {
+    let cur = el.parentElement;
+    while (cur && cur !== document.body) {
+        const d = getComputedStyle(cur).display;
+        if (d === 'grid' || d === 'inline-grid') return cur;
+        cur = cur.parentElement;
+    }
+    return null;
+}
+
 // 按书签数降序排序卡片 (未获取到书签数的排最后)
+// 注意: 卡片可能被外层容器包裹 (.fc2-custom-card-wrapper 并非 grid 直接子元素)，
+// 因此必须基于真正的 grid 容器，重新排列每个卡片对应的"顶层 grid 项"，
+// 否则会把所有 wrapper 塞进第一个格子里，导致全部挤到第一列。
 function sortCards() {
     if (!sortByBookmark) return;
     const wrappers = [...document.querySelectorAll('.fc2-custom-card-wrapper')];
-    const parent = wrappers[0]?.parentElement;
-    if (!parent) return;
-    wrappers.sort((a, b) => {
-        const va = bookmarkCache.get(a.dataset.code), vb = bookmarkCache.get(b.dataset.code);
+    if (!wrappers.length) return;
+
+    // 优先找 grid 容器；找不到则退回原逻辑 (flex 或简单块级布局)
+    const container = findGridContainer(wrappers[0]) || wrappers[0].parentElement;
+    if (!container) return;
+
+    // 计算每个 wrapper 在容器中的顶层单元 (容器直接子元素)
+    const items = wrappers.map(w => {
+        let el = w;
+        while (el.parentElement && el.parentElement !== container) el = el.parentElement;
+        return { wrap: w, top: el };
+    });
+
+    items.sort((a, b) => {
+        const va = bookmarkCache.get(a.wrap.dataset.code), vb = bookmarkCache.get(b.wrap.dataset.code);
         const na = va === undefined || va === null ? -1 : va;
         const nb = vb === undefined || vb === null ? -1 : vb;
         return nb - na;
-    }).forEach(w => parent.appendChild(w));
+    }).forEach(it => container.appendChild(it.top));
 }
 
 // 详情页预览图点击放大 (lightbox)
