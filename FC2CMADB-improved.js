@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC2CMADB-improved
 // @namespace    [https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved](https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved)
-// @version      1.4.2
+// @version      1.4.3
 // @description  参考Duckee KememChan的fc2脚本用AI重构(精简版)
 // @author       Awei
 // @icon         [https://fc2cmadb.com/favicon.ico](https://fc2cmadb.com/favicon.ico)
@@ -57,12 +57,11 @@ const makeCache = (key, ttl) => {
     return { has: k => mem.has(k), get: k => mem.get(k), set(k, v) { mem.set(k, v); store.set(key, Object.fromEntries(mem), ttl); } };
 };
 
-// ============ 节流 + 429 退避 (本站限流 3次/短窗口) ============
+// ============ 节流 + 429 退避 (本站实测 ~5.5 req/s 连续不 429) ============
 const H = 3600e3;
 const seedCache = makeCache('fc2-seed', 12 * H);
 const bookmarkCache = makeCache('fc2-bm', 6 * H);
 const baihuseCache = new Map();
-const pending = { seed: new Map(), bm: new Map(), baihuse: new Map() };
 let lastSelf = 0, lastExt = 0, until = 0, toastEl;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const limited = () => Date.now() < until;
@@ -102,48 +101,42 @@ async function bmAcquire() {
 function bmRelease() { bmInFlight--; }
 
 const API = {
-    // Sukebei 磁力批量查询 (外部站点)
+    // Sukebei 磁力批量查询 (外部站点)。输入已用 Set 去重且为串行 await 调用，
+    // 配合 seedCache 缓存即可避免重复请求，无需额外 pending 去重表。
     async sukebei(input) {
-        const all = [...new Set(input)];
-        const todo = all.filter(c => !seedCache.has(c) && !pending.seed.has(c));
-        if (todo.length) {
-            const p = throttle(false, () => new Promise(r => {
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url: `https://sukebei.nyaa.si/?f=0&c=0_0&q=${encodeURIComponent(todo.join('|'))}&s=seeders&o=desc`,
-                    onload: res => {
-                        todo.forEach(c => pending.seed.delete(c));
-                        if (res.status === 429) return backoff(), r();
-                        if (res.status !== 200) return todo.forEach(c => seedCache.set(c, null)), r();
-                        const doc = new DOMParser().parseFromString(res.responseText, 'text/html');
-                        todo.forEach(c => seedCache.set(c, null));
-                        doc.querySelectorAll('tbody > tr').forEach(row => {
-                            const title = Array.from(row.querySelectorAll('td a:not(.comments)')).map(a => a.textContent).join(' ');
-                            const c = todo.find(code => title.includes(code));
-                            if (c && !seedCache.get(c)) {
-                                const dl = row.querySelector('td a i.fa-download')?.parentElement?.href || '';
-                                seedCache.set(c, {
-                                    torrent: dl ? new URL(dl, 'https://sukebei.nyaa.si').href : '',
-                                    magnet: row.querySelector('td a i.fa-magnet')?.parentElement?.href || '',
-                                    seed: row.querySelector('td:nth-last-child(3)')?.textContent.replace(/[^0-9]/g, '') || '0'
-                                });
-                            }
-                        });
-                        r();
-                    },
-                    onerror: () => { todo.forEach(c => { pending.seed.delete(c); seedCache.set(c, null); }); r(); }
-                });
-            }));
-            todo.forEach(c => pending.seed.set(c, p));
-            await p;
-        }
-        await Promise.all(all.map(c => pending.seed.get(c)).filter(Boolean));
+        const todo = [...new Set(input)].filter(c => !seedCache.has(c));
+        if (!todo.length) return;
+        await throttle(false, () => new Promise(r => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `https://sukebei.nyaa.si/?f=0&c=0_0&q=${encodeURIComponent(todo.join('|'))}&s=seeders&o=desc`,
+                onload: res => {
+                    if (res.status === 429) return backoff(), r();
+                    if (res.status !== 200) return todo.forEach(c => seedCache.set(c, null)), r();
+                    const doc = new DOMParser().parseFromString(res.responseText, 'text/html');
+                    todo.forEach(c => seedCache.set(c, null));
+                    doc.querySelectorAll('tbody > tr').forEach(row => {
+                        const title = Array.from(row.querySelectorAll('td a:not(.comments)')).map(a => a.textContent).join(' ');
+                        const c = todo.find(code => title.includes(code));
+                        if (c && !seedCache.get(c)) {
+                            const dl = row.querySelector('td a i.fa-download')?.parentElement?.href || '';
+                            seedCache.set(c, {
+                                torrent: dl ? new URL(dl, 'https://sukebei.nyaa.si').href : '',
+                                magnet: row.querySelector('td a i.fa-magnet')?.parentElement?.href || '',
+                                seed: row.querySelector('td:nth-last-child(3)')?.textContent.replace(/[^0-9]/g, '') || '0'
+                            });
+                        }
+                    });
+                    r();
+                },
+                onerror: () => { todo.forEach(c => seedCache.set(c, null)); r(); }
+            });
+        }));
     },
 
     // Baihuse 预览图/视频 (外部站点)
     baihuse(code) {
         if (baihuseCache.has(code)) return baihuseCache.get(code);
-        if (pending.baihuse.has(code)) return pending.baihuse.get(code);
         const p = throttle(false, () => new Promise(r => {
             GM_xmlhttpRequest({
                 method: 'GET',
@@ -161,16 +154,14 @@ const API = {
                 onerror: () => r({ images: [], videos: [] })
             });
         }));
-        pending.baihuse.set(code, p);
-        p.then(v => { baihuseCache.set(code, v); pending.baihuse.delete(code); });
+        p.then(v => { baihuseCache.set(code, v); });
         return p;
     },
 
     // 书签数 (打本站 → 并发限流 + 429 退避)
     async bookmark(code) {
         if (bookmarkCache.has(code)) return bookmarkCache.get(code);
-        if (pending.bm.has(code)) return pending.bm.get(code);
-        const p = (async () => {
+        const v = await (async () => {
             await bmAcquire();
             try {
                 const res = await fetch(`/articles/${encodeURIComponent(code)}`, { credentials: 'same-origin' });
@@ -178,21 +169,15 @@ const API = {
                 if (!res.ok) return undefined;
                 const m = (await res.text()).match(/"bookmark_count"\s*:\s*(\d+)/);
                 return m ? +m[1] : null;
-            } finally {
-                bmRelease();
-            }
-        })().then(v => {
-            if (v !== undefined) bookmarkCache.set(code, v);
-            pending.bm.delete(code);
-            return v;
-        });
-        pending.bm.set(code, p);
-        return p;
+            } finally { bmRelease(); }
+        })();
+        if (v !== undefined) bookmarkCache.set(code, v);
+        return v;
     },
 
     // 批次查书签数：并发拉取，受 bmAcquire/bmRelease 限流控制；命中 429 由 backoff 统一暂停
     async bookmarkBatch(codes) {
-        if (!bookmarkEnabled || limited()) return;
+        if (!bookmarkEnabled) return;
         const todo = [...new Set(codes)].filter(c => !bookmarkCache.has(c));
         if (!todo.length) return;
         await Promise.all(todo.map(c => this.bookmark(c)));
