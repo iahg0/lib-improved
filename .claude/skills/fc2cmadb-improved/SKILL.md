@@ -64,7 +64,7 @@ fc2cmadb.com 是 **Laravel + Inertia + Livewire** 的 SPA：
 
 ### 持久化缓存
 - `store`（localStorage 包装，含 TTL）+ `makeCache(key, ttl)` 生成 `{has,get,set}` 缓存。
-- `seedCache`（sukebei 磁力，TTL 12h）、`bookmarkCache`（书签数，TTL 6h）、`baihuseCache`（内存 Map）。
+- `seedCache`（sukebei 磁力，TTL 12h）、`bookmarkCache`（书签数，TTL 6h）、`baihuseStore`（预览图/视频，TTL 24h）均持久化 localStorage；`baihuseCache`（内存 Map，存 in-flight/本次会话）。
 - **刷新不会重复请求已缓存编号**：`bookmarkCache` 存 localStorage + 6h TTL，脚本加载即读回；`bookmarkBatch` 里 `if (bookmarkCache.has(c)) continue` 跳过已缓存编号。只有首次访问 / 缓存过期(>6h) / 上次请求失败(如 429 未写缓存) 才会重新请求。
 
 ### 节流与 429 退避
@@ -75,8 +75,8 @@ fc2cmadb.com 是 **Laravel + Inertia + Livewire** 的 SPA：
   - 实测并发 4 时速率约 4.5 req/s，30 张书签从原 ~30s（串行 900ms 节流）降到 ~8-12s。
 
 ### API 模块（`API` 对象）
-- `API.sukebei(input)`：批量查询磁力（外部 sukebei.nyaa.si，走 GM_xmlhttpRequest），写入 seedCache；无磁力的写 `null`。**磁力判断统一为：`const s = seedCache.get(code); !!(s && s.magnet)`**。
-- `API.baihuse(code)`：拉取预览图/视频（仅详情页用）。
+- `API.sukebei(input)`：分批(20个/批) OR 查询磁力（外部 sukebei.nyaa.si，走 GM_xmlhttpRequest），分块仍漏检的编号再逐个单独搜索确认，写入 seedCache；**只有 HTTP 200 才写 `null`（无磁力）**，429/网络错误不写缓存留给下次重试。**磁力判断统一为：`const s = seedCache.get(code); !!(s && s.magnet)`**。
+- `API.baihuse(code)`：拉取预览图/视频（列表无图封面兜底 + 详情页预览共用），结果持久化 `baihuseStore`(24h)，非空才落盘；空结果只留内存，下次会话重新确认。
 - `API.bookmark(code)` / `API.bookmarkBatch(codes)`：打本站详情页取 `bookmark_count`。**并发拉取**：`bookmarkBatch` 先过滤未缓存编号，再 `Promise.all` 并发调用 `bookmark`，每个经 `bmAcquire/bmRelease` 令牌桶限流；命中 429 由 `backoff()` 统一暂停 60s。
 
 ### 开关（localStorage）
@@ -159,6 +159,12 @@ python tools/fc2_lint.py --json    # 输出 JSON（供脚本/CI）
    必须用 `IntersectionObserver` 懒加载（`setupCoverFallback`，卡片进入视口才请求），
    并保留 `error` 兜底；`fetchCover` 里 `data-fc2Cover` 防同编号重复请求。
    改动此项时不要退回“整页一次性请求”。
+8. **sukebei 磁力搜索必须分批，失败不能写 null**：一次性把整页编号 `|` 连成一个 OR 查询
+   不可靠——实测 100 个编号连翻 3 页（225 条结果）仍会把有磁链的编号漏掉
+   （如 `4583256`，单独搜索才搜到），导致 hideNoMagnet 把有磁链的卡片误隐藏。
+   正确做法：**按 20 个/批分块 OR 查询**（每块第一页即可 100% 命中，100 个编号仅 5 个请求），
+   分块仍漏检的再**逐个单独搜索确认**（上限 8 个）；429/网络错误/非 200 一律**不缓存 null**，
+   避免暂时性失败被毒化成 12h 的“无磁链”。
 
 
 ## 修改流程建议

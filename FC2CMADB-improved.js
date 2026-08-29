@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC2CMADB-improved
 // @namespace    [https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved](https://sleazyfork.org/zh-CN/scripts/583333-fc2cmadb-improved)
-// @version      1.4.12
+// @version      1.4.13
 // @description  参考Duckee KememChan的fc2脚本用AI重构(精简版)
 // @author       Awei
 // @icon         [https://fc2cmadb.com/favicon.ico](https://fc2cmadb.com/favicon.ico)
@@ -59,9 +59,10 @@ const makeCache = (key, ttl) => {
 
 // ============ 节流 + 429 退避 (本站实测 ~5.5 req/s 连续不 429) ============
 const H = 3600e3;
-const seedCache = makeCache('fc2-seed', 12 * H);
-const bookmarkCache = makeCache('fc2-bm', 6 * H);
-const baihuseCache = new Map();
+const seedCache = makeCache('fc2-seed', 12 * H);       // sukebei 磁力/种子(持久化)
+const bookmarkCache = makeCache('fc2-bm', 6 * H);      // 书签数(持久化)
+const baihuseStore = makeCache('fc2-baihuse', 24 * H); // baihuse 预览图/视频(持久化)
+const baihuseCache = new Map();                        // baihuse in-flight/本次会话
 let lastSelf = 0, lastExt = 0, until = 0, toastEl;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const limited = () => Date.now() < until;
@@ -100,24 +101,55 @@ async function bmAcquire() {
 }
 function bmRelease() { bmInFlight--; }
 
+let sukebeiRunning = null;   // sukebei 并发调用串行化锁（防止同批编号被重复请求）
+
 const API = {
-    // Sukebei 磁力批量查询 (外部站点)。输入已用 Set 去重且为串行 await 调用，
-    // 配合 seedCache 缓存即可避免重复请求，无需额外 pending 去重表。
+    // Sukebei 磁力批量查询 (外部站点)。搜索策略：
+    //  - 分批(20个/批) OR 查询：实测一次性塞 100+ 编号的 OR 查询不可靠（部分有磁链的
+    //    编号连翻 3 页都搜不到），分块后每批第一页即可 100% 命中，请求数也能控制在个位数。
+    //  - 分块仍漏检的编号再逐个单独搜索确认，防"有磁链但被当成无磁链"导致卡片被隐藏。
+    //  - 429/网络错误/非200 一律不写 null 缓存，避免把暂时性失败毒化成 12h 的"无磁链"。
     async sukebei(input) {
+        while (sukebeiRunning) await sukebeiRunning;   // 并发调用串行化，防同批编号重复请求
         const todo = [...new Set(input)].filter(c => !seedCache.has(c));
         if (!todo.length) return;
-        await throttle(false, () => new Promise(r => {
+        let done;
+        sukebeiRunning = new Promise(r => done = r);
+        try {
+            const CHUNK = 20;
+            for (let i = 0; i < todo.length; i += CHUNK) {
+                const chunk = todo.slice(i, i + CHUNK);
+                const query = chunk.join('|');
+                for (let page = 1; page <= 2 && chunk.some(c => !seedCache.get(c)); page++) {
+                    const ok = await this._sukebeiQuery(chunk, query, page);
+                    if (!ok) return;   // 失败不缓存 null，留给下次重试
+                }
+            }
+            // 分块仍漏检的编号逐个单独确认（上限 8 个，避免冷启动时请求过多）
+            const miss = todo.filter(c => !seedCache.get(c));
+            for (const c of miss.slice(0, 8)) {
+                const ok = await this._sukebeiQuery([c], c, 1);
+                if (!ok) return;
+            }
+        } finally {
+            sukebeiRunning = null;
+            done();
+        }
+    },
+
+    _sukebeiQuery(codes, query, page) {
+        return throttle(false, () => new Promise(r => {
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: `https://sukebei.nyaa.si/?f=0&c=0_0&q=${encodeURIComponent(todo.join('|'))}&s=seeders&o=desc`,
+                url: `https://sukebei.nyaa.si/?f=0&c=0_0&q=${encodeURIComponent(query)}&s=seeders&o=desc${page > 1 ? `&p=${page}` : ''}`,
                 onload: res => {
-                    if (res.status === 429) return backoff(), r();
-                    if (res.status !== 200) return todo.forEach(c => seedCache.set(c, null)), r();
+                    if (res.status === 429) return backoff(), r(false);
+                    if (res.status !== 200) return r(false);   // 失败不缓存，防误判无磁链
                     const doc = new DOMParser().parseFromString(res.responseText, 'text/html');
-                    todo.forEach(c => seedCache.set(c, null));
+                    codes.forEach(c => { if (!seedCache.get(c)) seedCache.set(c, null); });   // 仅 200 才默认无磁力
                     doc.querySelectorAll('tbody > tr').forEach(row => {
                         const title = Array.from(row.querySelectorAll('td a:not(.comments)')).map(a => a.textContent).join(' ');
-                        const c = todo.find(code => title.includes(code));
+                        const c = codes.find(code => title.includes(code));
                         if (c && !seedCache.get(c)) {
                             const dl = row.querySelector('td a i.fa-download')?.parentElement?.href || '';
                             seedCache.set(c, {
@@ -127,16 +159,23 @@ const API = {
                             });
                         }
                     });
-                    r();
+                    r(true);
                 },
-                onerror: () => { todo.forEach(c => seedCache.set(c, null)); r(); }
+                onerror: () => r(false)   // 网络错误不缓存 null
             });
         }));
     },
 
-    // Baihuse 预览图/视频 (外部站点)
+    // Baihuse 预览图/视频 (外部站点)。结果持久化到 localStorage(24h TTL)，
+    // 刷新/再次访问不重复请求；空结果只留内存(本次会话)，下次访问再重新确认。
     baihuse(code) {
-        if (baihuseCache.has(code)) return baihuseCache.get(code);
+        if (baihuseCache.has(code)) return baihuseCache.get(code);   // in-flight/本次会话
+        const cached = baihuseStore.get(code);
+        if (cached) {
+            const p = Promise.resolve(cached);
+            baihuseCache.set(code, p);
+            return p;
+        }
         const p = throttle(false, () => new Promise(r => {
             GM_xmlhttpRequest({
                 method: 'GET',
@@ -154,7 +193,10 @@ const API = {
                 onerror: () => r({ images: [], videos: [] })
             });
         }));
-        p.then(v => { baihuseCache.set(code, v); });
+        baihuseCache.set(code, p);   // 立即缓存 promise，防 in-flight 重复请求
+        p.then(v => {
+            if (v.images.length || v.videos.length) baihuseStore.set(code, v);   // 非空才持久化
+        });
         return p;
     },
 
